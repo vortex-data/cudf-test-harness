@@ -34,10 +34,12 @@ target_link_libraries(cudf-test-harness PRIVATE
   ${CMAKE_DL_LIBS}
 )
 
-# Set RPATH to find conda libraries at runtime
+# Set RPATH for bundled distribution (looks for libs relative to binary)
+# During build, also include conda lib path
 set_target_properties(cudf-test-harness PROPERTIES
   BUILD_RPATH "$ENV{CONDA_PREFIX}/lib"
-  INSTALL_RPATH "$ENV{CONDA_PREFIX}/lib"
+  INSTALL_RPATH "$ORIGIN/lib"
+  BUILD_WITH_INSTALL_RPATH OFF
 )
 
 # Install target
