@@ -78,6 +78,7 @@ struct ArrowDeviceArray {
   int64_t device_id;
   ArrowDeviceType device_type;
   void* sync_event;
+  int64_t _reserved[3];
 };
 
 #ifdef __cplusplus
