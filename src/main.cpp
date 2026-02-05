@@ -1,5 +1,4 @@
 #include <cstdlib>
-#include <cstring>
 #include <dlfcn.h>
 #include <iostream>
 #include <memory>
@@ -8,24 +7,22 @@
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/interop.hpp>
-#include <cudf/io/types.hpp>
 #include <cudf/types.hpp>
-#include <cudf/utilities/type_dispatcher.hpp>
-#include <rmm/mr/per_device_resource.hpp>
 
 #include "arrow_c_device.h"
 
 // Function pointer type for export_array
-using export_array_fn = int (*)(ArrowSchema*, ArrowDeviceArray*);
+using export_array_fn = int (*)(ArrowSchema *, ArrowDeviceArray *);
+using validate_array_fn = int (*)(ArrowSchema *, ArrowArray *);
 
-void print_usage(const char* program_name) {
+void print_usage(const char *program_name) {
     std::cerr << "Usage: " << program_name << " check <library.so>\n";
     std::cerr << "\n";
     std::cerr << "Commands:\n";
     std::cerr << "  check <library.so>  Load the library and test Arrow device data export\n";
 }
 
-const char* device_type_to_string(ArrowDeviceType device_type) {
+const char *device_type_to_string(ArrowDeviceType device_type) {
     switch (device_type) {
         case ARROW_DEVICE_CPU: return "CPU";
         case ARROW_DEVICE_CUDA: return "CUDA";
@@ -37,7 +34,7 @@ const char* device_type_to_string(ArrowDeviceType device_type) {
     }
 }
 
-const char* cudf_type_to_string(cudf::type_id type) {
+const char *cudf_type_to_string(cudf::type_id type) {
     switch (type) {
         case cudf::type_id::EMPTY: return "EMPTY";
         case cudf::type_id::INT8: return "INT8";
@@ -72,8 +69,8 @@ const char* cudf_type_to_string(cudf::type_id type) {
     }
 }
 
-void print_column_stats(const cudf::column_view& col) {
-    std::cout << "Column Statistics:\n";
+void print_column_stats(const cudf::column_view &col, const char *name) {
+    std::cout << "Column Statistics(" << name << "):\n";
     std::cout << "  Type: " << cudf_type_to_string(col.type().id()) << "\n";
     std::cout << "  Size: " << col.size() << " rows\n";
     std::cout << "  Null count: " << col.null_count() << "\n";
@@ -81,11 +78,11 @@ void print_column_stats(const cudf::column_view& col) {
     std::cout << "  Num children: " << col.num_children() << "\n";
 }
 
-int run_check(const char* library_path) {
+int run_check(const char *library_path) {
     std::cout << "Loading library: " << library_path << "\n";
 
     // Open the shared library
-    void* handle = dlopen(library_path, RTLD_NOW);
+    void *handle = dlopen(library_path, RTLD_NOW);
     if (!handle) {
         std::cerr << "Error: Failed to load library: " << dlerror() << "\n";
         return 1;
@@ -96,7 +93,7 @@ int run_check(const char* library_path) {
 
     // Load the export_array symbol
     auto export_array = reinterpret_cast<export_array_fn>(dlsym(handle, "export_array"));
-    const char* dlsym_error = dlerror();
+    const char *dlsym_error = dlerror();
     if (dlsym_error) {
         std::cerr << "Error: Failed to load symbol 'export_array': " << dlsym_error << "\n";
         dlclose(handle);
@@ -104,6 +101,8 @@ int run_check(const char* library_path) {
     }
 
     std::cout << "Found export_array symbol\n";
+
+    auto validate_array = reinterpret_cast<validate_array_fn>(dlsym(handle, "validate_array"));
 
     // Initialize the Arrow structures
     ArrowSchema schema{};
@@ -129,17 +128,43 @@ int run_check(const char* library_path) {
     std::cout << "  Device type: " << device_type_to_string(device_array.device_type) << "\n";
     std::cout << "  Device ID: " << device_array.device_id << "\n";
 
+    std::cout << "\nStruct children debug:\n";
+    std::cout << "  Schema n_children: " << schema.n_children << "\n";
+    std::cout << "  Schema children ptr: " << (void *) schema.children << "\n";
+    std::cout << "  Array n_children: " << device_array.array.n_children << "\n";
+    std::cout << "  Array children ptr: " << (void *) device_array.array.children << "\n";
+
+    if (schema.children) {
+        for (int64_t i = 0; i < schema.n_children; i++) {
+            std::cout << "  Child " << i << ":\n";
+            std::cout << "    schema ptr: " << (void *) schema.children[i] << "\n";
+            if (schema.children[i]) {
+                std::cout << "    format: " << (schema.children[i]->format ? schema.children[i]->format : "(null)") <<
+                        "\n";
+                std::cout << "    name: " << (schema.children[i]->name ? schema.children[i]->name : "(null)") << "\n";
+            }
+            if (device_array.array.children) {
+                std::cout << "    array ptr: " << (void *) device_array.array.children[i] << "\n";
+                if (device_array.array.children[i]) {
+                    std::cout << "    array length: " << device_array.array.children[i]->length << "\n";
+                }
+            }
+        }
+    }
+
     // Convert to cuDF column view using from_arrow_device_column
     std::cout << "\nConverting to cuDF column view...\n";
     try {
-        auto column_view_ptr = cudf::from_arrow_device_column(&schema, &device_array);
+        auto table = cudf::from_arrow_device(&schema, &device_array);
 
         std::cout << "Conversion successful!\n\n";
 
-        // Print summary stats
-        print_column_stats(*column_view_ptr);
-
-    } catch (const std::exception& e) {
+        // convert to host array, call the verifier inside of the shared library.
+        auto host_array = cudf::to_arrow_host(*table);
+        if (validate_array(&schema, &host_array->array) != 0) {
+            std::cerr << "\nValidation failed!\n";
+        }
+    } catch (const std::exception &e) {
         std::cerr << "Error: Failed to convert Arrow array to cuDF column: " << e.what() << "\n";
 
         // Release the Arrow array
@@ -177,7 +202,7 @@ int run_check(const char* library_path) {
     return 0;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
