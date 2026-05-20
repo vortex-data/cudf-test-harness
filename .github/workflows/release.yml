@@ -10,11 +10,15 @@ on:
 jobs:
   build:
     name: Build and Release
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=gpu/tag=cudf-test-harness
     container:
       image: nvidia/cuda:13.1.0-devel-ubuntu24.04
 
     steps:
+      - uses: runs-on/action@v2
+        with:
+          sccache: s3
+
       - name: Install build tools
         run: |
           apt-get update
@@ -42,6 +46,9 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache \
             -DBUILD_TEST_LIB=OFF
           cmake --build build
 
