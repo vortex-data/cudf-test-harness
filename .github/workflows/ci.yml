@@ -1,0 +1,94 @@
+name: Build and Release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: runs-on=${{ github.run_id }}/runner=gpu/tag=cudf-test-harness
+    container:
+      image: nvidia/cuda:13.1.0-devel-ubuntu24.04
+
+    steps:
+      - uses: runs-on/action@v2
+        with:
+          sccache: s3
+
+      - name: Configure sccache timeout
+        run: |
+          mkdir -p ~/.config/sccache
+          echo 'server_startup_timeout_ms = 60000' > ~/.config/sccache/config
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+
+      - name: Pre-start sccache server
+        run: sccache --start-server
+
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl
+          curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc -o /usr/share/keyrings/kitware-archive-keyring.asc
+          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.asc] https://apt.kitware.com/ubuntu/ noble main' > /etc/apt/sources.list.d/kitware.list
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            ninja-build \
+            tar \
+            zlib1g-dev
+          cmake --version
+          /usr/local/cuda/bin/nvcc --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache \
+            -DBUILD_TEST_LIB=OFF
+          cmake --build build
+
+      - name: Create bundle
+        run: |
+          chmod +x scripts/bundle.sh
+          ./scripts/bundle.sh
+
+      - name: Verify bundle
+        run: |
+          rm -rf /tmp/cudf-test-harness-bundle
+          mkdir -p /tmp/cudf-test-harness-bundle
+          tar -xzf build/bundle/cudf-test-harness-*.tar.gz -C /tmp/cudf-test-harness-bundle
+          BINARY="$(echo /tmp/cudf-test-harness-bundle/*/cudf-test-harness)"
+          readelf -d "$BINARY" | grep -F '$ORIGIN/lib'
+          OUTPUT="$("$BINARY" 2>&1 || true)"
+          echo "$OUTPUT" | grep 'Usage:'
+
+      - name: Upload artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: cudf-test-harness-linux-x86_64
+          path: build/bundle/*.tar.gz
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: build/bundle/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
