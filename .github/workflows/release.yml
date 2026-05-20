@@ -1,6 +1,7 @@
 name: Build and Release
 
 on:
+  pull_request:
   push:
     tags:
       - 'v*'
@@ -8,43 +9,56 @@ on:
 
 jobs:
   build:
+    name: Build and Release
     runs-on: ubuntu-latest
     container:
-      image: rapidsai/ci-conda:latest
+      image: nvidia/cuda:13.1.0-devel-ubuntu24.04
 
     steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl
+          curl -fsSL https://apt.kitware.com/keys/kitware-archive-latest.asc -o /usr/share/keyrings/kitware-archive-keyring.asc
+          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.asc] https://apt.kitware.com/ubuntu/ noble main' > /etc/apt/sources.list.d/kitware.list
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            ninja-build \
+            tar \
+            zlib1g-dev
+          cmake --version
+          /usr/local/cuda/bin/nvcc --version
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup conda environment
-        run: |
-          conda create -n build-env -y -c rapidsai -c conda-forge -c nvidia \
-            libcudf=26.04.00 \
-            cmake \
-            ninja \
-            patchelf \
-            gcc_linux-64 \
-            gxx_linux-64
-
       - name: Build
-        shell: bash -l {0}
         run: |
-          source /opt/conda/etc/profile.d/conda.sh
-          conda activate build-env
-          mkdir build && cd build
-          cmake -G Ninja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TEST_LIB=OFF \
-            ..
-          ninja
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+            -DBUILD_TEST_LIB=OFF
+          cmake --build build
 
       - name: Create bundle
-        shell: bash -l {0}
         run: |
-          source /opt/conda/etc/profile.d/conda.sh
-          conda activate build-env
           chmod +x scripts/bundle.sh
           ./scripts/bundle.sh
+
+      - name: Verify bundle
+        run: |
+          rm -rf /tmp/cudf-test-harness-bundle
+          mkdir -p /tmp/cudf-test-harness-bundle
+          tar -xzf build/bundle/cudf-test-harness-*.tar.gz -C /tmp/cudf-test-harness-bundle
+          BINARY="$(echo /tmp/cudf-test-harness-bundle/*/cudf-test-harness)"
+          readelf -d "$BINARY" | grep -F '$ORIGIN/lib'
+          OUTPUT="$("$BINARY" 2>&1 || true)"
+          echo "$OUTPUT" | grep 'Usage:'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

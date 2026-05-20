@@ -28,13 +28,17 @@ and a non-zero exit code should be returned.
 
 ## Building
 
-Expect that this is being build in a CMake project, inside of a conda environment where the following has been run:
+Build with CMake:
 
 ```
-conda install -c rapidsai -c conda-forge -c nvidia rapidsai::libcudf
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DBUILD_TEST_LIB=OFF
+cmake --build build
 ```
 
-The binary should build in debug mode with full debug symbols by default.
+The CMake configure step fetches and builds cuDF `26.04.00` from source, including the dependencies managed by cuDF's RAPIDS CMake files. This source-build path requires CMake 3.30.4 or newer and CUDA Toolkit 13.0 or newer. The binary builds in debug mode with full debug symbols by default when `CMAKE_BUILD_TYPE` is not set.
 
 ## Links
 

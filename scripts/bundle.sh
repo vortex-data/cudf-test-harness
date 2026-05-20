@@ -26,8 +26,8 @@ mkdir -p "$BUNDLE_PATH/lib"
 
 echo "Collecting dependencies for $BINARY..."
 
-# Copy the binary
-cp "$BINARY" "$BUNDLE_PATH/"
+# Install the binary so CMake applies the bundle RPATH.
+cmake --install "$BUILD_DIR" --prefix "$BUNDLE_PATH" --component harness
 
 # Get all shared library dependencies (excluding system libraries we expect to exist)
 # We keep: libcu*, libnv*, librmm*, libcudf*, libarrow*, libstdc++, etc.
@@ -87,15 +87,6 @@ export LD_LIBRARY_PATH="${SCRIPT_DIR}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "${SCRIPT_DIR}/cudf-test-harness" "$@"
 WRAPPER_EOF
 chmod +x "$BUNDLE_PATH/cudf-test-harness.sh"
-
-# Also patch the binary's rpath to look in ./lib (for direct execution)
-if command -v patchelf &> /dev/null; then
-    echo "Patching rpath..."
-    patchelf --set-rpath '$ORIGIN/lib' "$BUNDLE_PATH/cudf-test-harness"
-else
-    echo "Warning: patchelf not found. Install it for direct binary execution."
-    echo "         Without it, use the wrapper script: ./cudf-test-harness.sh"
-fi
 
 # Create tarball
 echo ""

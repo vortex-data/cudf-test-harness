@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.26)
+cmake_minimum_required(VERSION 3.30.4)
 
-project(cudf-test-harness LANGUAGES CXX CUDA)
+project(cudf-test-harness LANGUAGES C CXX CUDA)
 
 # Default to Debug build with full debug symbols
 if(NOT CMAKE_BUILD_TYPE)
@@ -9,13 +9,36 @@ endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # Debug flags
 set(CMAKE_CXX_FLAGS_DEBUG "-g3 -O0")
 set(CMAKE_CUDA_FLAGS_DEBUG "-g -G -O0")
 
-# Find cuDF
-find_package(cudf REQUIRED)
+include(FetchContent)
+find_package(CUDAToolkit REQUIRED)
+
+if(CUDAToolkit_VERSION VERSION_LESS 13.0)
+  message(FATAL_ERROR "cuDF 26.04.00 source builds require CUDA Toolkit 13.0 or newer")
+endif()
+
+foreach(option
+  BUILD_TESTS
+  BUILD_BENCHMARKS
+  CUDF_BUILD_TESTUTIL
+  CUDF_BUILD_STREAMS_TEST_UTIL
+  CUDF_KVIKIO_REMOTE_IO
+)
+  set(${option} OFF CACHE BOOL "Disabled for cudf-test-harness cuDF source build" FORCE)
+endforeach()
+
+FetchContent_Declare(
+  cudf
+  GIT_REPOSITORY https://github.com/rapidsai/cudf.git
+  GIT_TAG f9c3cf195768647ac39d98674a614ca414cd1baa
+  SOURCE_SUBDIR cpp
+)
+FetchContent_MakeAvailable(cudf)
 
 # Create the executable
 add_executable(cudf-test-harness
@@ -26,25 +49,21 @@ target_include_directories(cudf-test-harness PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Use the conda environment's libstdc++ to match cuDF
-# Must be linked before other libraries to override system libstdc++
 target_link_libraries(cudf-test-harness PRIVATE
-  $ENV{CONDA_PREFIX}/lib/libstdc++.so
   cudf::cudf
   ${CMAKE_DL_LIBS}
 )
 
 # Set RPATH for bundled distribution (looks for libs relative to binary)
-# During build, also include conda lib path
 set_target_properties(cudf-test-harness PROPERTIES
-  BUILD_RPATH "$ENV{CONDA_PREFIX}/lib"
   INSTALL_RPATH "$ORIGIN/lib"
   BUILD_WITH_INSTALL_RPATH OFF
 )
 
 # Install target
 install(TARGETS cudf-test-harness
-  RUNTIME DESTINATION bin
+  RUNTIME DESTINATION .
+  COMPONENT harness
 )
 
 # Optional: Build test library
