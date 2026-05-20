@@ -161,7 +161,14 @@ int run_check(const char *library_path) {
 
         // convert to host array, call the verifier inside of the shared library.
         auto host_array = cudf::to_arrow_host(*table);
-        if (validate_array(&schema, &host_array->array) != 0) {
+        auto host_metadata = std::vector<cudf::column_metadata>{
+                cudf::column_metadata{"prims"},
+                cudf::column_metadata{"decimals"},
+                cudf::column_metadata{"strings"},
+                cudf::column_metadata{"dates"},
+        };
+        auto host_schema = cudf::to_arrow_schema(*table, host_metadata);
+        if (validate_array(host_schema.get(), &host_array->array) != 0) {
             std::cerr << "\nValidation failed!\n";
         }
     } catch (const std::exception &e) {

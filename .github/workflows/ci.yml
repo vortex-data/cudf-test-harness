@@ -1,4 +1,4 @@
-name: Build and Release
+name: Build
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build and Release
+    name: Build
     runs-on: runs-on=${{ github.run_id }}/runner=gpu/tag=cudf-test-harness
     container:
       image: nvidia/cuda:13.1.0-devel-ubuntu24.04
