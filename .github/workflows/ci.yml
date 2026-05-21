@@ -15,7 +15,7 @@ jobs:
     name: Build
     runs-on: runs-on=${{ github.run_id }}/runner=gpu/tag=cudf-test-harness
     container:
-      image: nvidia/cuda:13.1.0-devel-ubuntu24.04
+      image: nvidia/cuda:13.0.0-devel-ubuntu24.04
 
     steps:
       - uses: runs-on/action@v2
