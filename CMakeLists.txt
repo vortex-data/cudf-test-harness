@@ -17,10 +17,9 @@ set(CMAKE_CUDA_FLAGS_DEBUG "-g -G -O0")
 
 include(FetchContent)
 find_package(CUDAToolkit REQUIRED)
-find_package(Git REQUIRED)
 
 if(CUDAToolkit_VERSION VERSION_LESS 13.0)
-  message(FATAL_ERROR "cuDF 26.04.00 source builds require CUDA Toolkit 13.0 or newer")
+  message(FATAL_ERROR "cuDF source builds require CUDA Toolkit 13.0 or newer")
 endif()
 
 foreach(option
@@ -36,16 +35,10 @@ endforeach()
 FetchContent_Declare(
   cudf
   GIT_REPOSITORY https://github.com/rapidsai/cudf.git
-  GIT_TAG f9c3cf195768647ac39d98674a614ca414cd1baa
+  # rapidsai/cudf#22620: fix Arrow Device string-view imports with producer-owned
+  # ArrowArray.private_data.
+  GIT_TAG 2a2b126f870bb1d1fdad62ac1c726ccad6001ec6
   SOURCE_SUBDIR cpp
-  # Temporary until cuDF imports external Arrow C Device STRING_VIEW arrays without
-  # assuming Nanoarrow-owned ArrowArray.private_data. Vortex exports producer-owned
-  # private_data, which is valid Arrow C data.
-  PATCH_COMMAND ${CMAKE_COMMAND}
-    -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
-    -DSOURCE_DIR=<SOURCE_DIR>
-    -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/patches/cudf-arrow-device-string-view-variadic-buffers.patch
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_patch_once.cmake
 )
 FetchContent_MakeAvailable(cudf)
 
