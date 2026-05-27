@@ -38,7 +38,7 @@ cmake -S . -B build -G Ninja \
 cmake --build build
 ```
 
-The CMake configure step fetches and builds cuDF `26.04.00` from source, including the dependencies managed by cuDF's RAPIDS CMake files. This source-build path requires CMake 3.30.4 or newer and CUDA Toolkit 13.0 or newer. The binary builds in debug mode with full debug symbols by default when `CMAKE_BUILD_TYPE` is not set.
+The CMake configure step fetches and builds cuDF from a pinned upstream commit containing `rapidsai/cudf#22620`, including the dependencies managed by cuDF's RAPIDS CMake files. This source-build path requires CMake 3.30.4 or newer and CUDA Toolkit 13.0 or newer. The binary builds in debug mode with full debug symbols by default when `CMAKE_BUILD_TYPE` is not set.
 
 ## Links
 
