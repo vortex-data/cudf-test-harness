@@ -2,7 +2,9 @@
 #include <dlfcn.h>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
@@ -152,27 +154,33 @@ int run_check(const char *library_path) {
         }
     }
 
-    // Convert to cuDF column view using from_arrow_device_column
-    std::cout << "\nConverting to cuDF column view...\n";
+    std::cout << "\nConverting to cuDF table view...\n";
     try {
         auto table = cudf::from_arrow_device(&schema, &device_array);
 
         std::cout << "Conversion successful!\n\n";
 
-        // convert to host array, call the verifier inside of the shared library.
+        // Round-trip to host Arrow and validate in the producer library.
         auto host_array = cudf::to_arrow_host(*table);
-        auto host_metadata = std::vector<cudf::column_metadata>{
-                cudf::column_metadata{"prims"},
-                cudf::column_metadata{"decimals"},
-                cudf::column_metadata{"strings"},
-                cudf::column_metadata{"dates"},
-        };
+        auto host_metadata = std::vector<cudf::column_metadata>{};
+        auto const num_columns = table->num_columns();
+        if (schema.n_children != num_columns || schema.children == nullptr) {
+            throw std::runtime_error("exported schema does not match imported table");
+        }
+        host_metadata.reserve(num_columns);
+        for (auto i = 0; i < num_columns; ++i) {
+            auto const child_schema = schema.children[i];
+            if (child_schema == nullptr || child_schema->name == nullptr) {
+                throw std::runtime_error("exported schema child is missing a name");
+            }
+            host_metadata.push_back(cudf::column_metadata{child_schema->name});
+        }
         auto host_schema = cudf::to_arrow_schema(*table, host_metadata);
         if (validate_array(host_schema.get(), &host_array->array) != 0) {
-            std::cerr << "\nValidation failed!\n";
+            throw std::runtime_error("validation failed");
         }
     } catch (const std::exception &e) {
-        std::cerr << "Error: Failed to convert Arrow array to cuDF column: " << e.what() << "\n";
+        std::cerr << "Error: Failed to validate Arrow device export with cuDF: " << e.what() << "\n";
 
         // Release the Arrow array
         if (device_array.array.release) {

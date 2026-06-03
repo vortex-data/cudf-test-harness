@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Build
-    runs-on: runs-on=${{ github.run_id }}/runner=gpu/tag=cudf-test-harness
+    runs-on: runs-on=${{ github.run_id }}/family=g5+g4dn+g6.*/cpu=8/image=ubuntu24-gpu-x64/spot=true/extras=s3-cache/tag=cudf-test-harness
     container:
       image: nvidia/cuda:13.0.0-devel-ubuntu24.04
 
@@ -58,7 +58,8 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CUDA_ARCHITECTURES=90-virtual \
             -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
