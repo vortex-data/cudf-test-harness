@@ -37,7 +37,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/rapidsai/cudf.git
   # rapidsai/cudf#22620: fix Arrow Device string-view imports with producer-owned
   # ArrowArray.private_data.
-  GIT_TAG 2a2b126f870bb1d1fdad62ac1c726ccad6001ec6
+  GIT_TAG 3ad0f0c9aeed6e5a521b07587e97c58943a714f7
   SOURCE_SUBDIR cpp
 )
 FetchContent_MakeAvailable(cudf)
