@@ -12,8 +12,16 @@ permissions:
 
 jobs:
   build:
-    name: Build
-    runs-on: runs-on=${{ github.run_id }}/family=g5+g4dn+g6.*/cpu=8/image=ubuntu24-gpu-x64/spot=true/extras=s3-cache/tag=cudf-test-harness
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: family=g5+g4dn+g6.*/cpu=8/image=ubuntu24-gpu-x64/spot=true/extras=s3-cache/tag=cudf-test-harness
+          - arch: aarch64
+            runner: family=g5g.xlarge/image=ubuntu24-gpu-arm64/spot=true/extras=s3-cache/tag=cudf-test-harness
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     container:
       image: nvidia/cuda:13.0.0-devel-ubuntu24.04
 
@@ -75,7 +83,7 @@ jobs:
         run: |
           rm -rf /tmp/cudf-test-harness-bundle
           mkdir -p /tmp/cudf-test-harness-bundle
-          tar -xzf build/bundle/cudf-test-harness-*.tar.gz -C /tmp/cudf-test-harness-bundle
+          tar -xzf build/bundle/cudf-test-harness-${{ matrix.arch }}.tar.gz -C /tmp/cudf-test-harness-bundle
           BINARY="$(echo /tmp/cudf-test-harness-bundle/*/cudf-test-harness)"
           readelf -d "$BINARY" | grep -F '$ORIGIN/lib'
           OUTPUT="$("$BINARY" 2>&1 || true)"
@@ -85,13 +93,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: cudf-test-harness-linux-x86_64
-          path: build/bundle/*.tar.gz
+          name: cudf-test-harness-linux-${{ matrix.arch }}
+          path: build/bundle/cudf-test-harness-${{ matrix.arch }}.tar.gz
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: build/bundle/*.tar.gz
+          files: build/bundle/cudf-test-harness-${{ matrix.arch }}.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
