@@ -20,7 +20,7 @@ jobs:
           - arch: x86_64
             runner: family=g5+g4dn+g6.*/cpu=8/image=ubuntu24-gpu-x64/spot=true/extras=s3-cache/tag=cudf-test-harness
           - arch: aarch64
-            runner: family=g5g.*/cpu=8/image=ubuntu24-gpu-arm64/spot=true/extras=s3-cache/tag=cudf-test-harness
+            runner: family=g5g.*/cpu=16/image=ubuntu24-gpu-arm64/spot=true/extras=s3-cache/tag=cudf-test-harness
     runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     container:
       image: nvidia/cuda:13.0.0-devel-ubuntu24.04
