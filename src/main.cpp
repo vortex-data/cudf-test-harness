@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <iomanip>
 #include <dlfcn.h>
 #include <iostream>
 #include <stdexcept>
@@ -54,7 +55,7 @@ void release_device_stream(ArrowDeviceArrayStream *stream) {
 class SharedLibrary {
 public:
     explicit SharedLibrary(const char *path) {
-        std::cout << "Loading library: " << path << "\n";
+        std::cout << "Library: " << path << "\n";
         handle_ = dlopen(path, RTLD_NOW);
         if (handle_ == nullptr) {
             throw std::runtime_error(std::string("failed to load library: ") + dlerror());
@@ -155,30 +156,24 @@ void validate_imported_table(cudf::table_view const &table,
 void print_device_array_summary(char const *label,
                                 ArrowSchema const *schema,
                                 ArrowDeviceArray const *device_array) {
-    std::cout << label << ": rows=" << device_array->array.length
-              << ", nulls=" << device_array->array.null_count
-              << ", device=" << device_type_to_string(device_array->device_type) << ":"
+    std::cout << label << "\n"
+              << "  rows: " << device_array->array.length
+              << ", nulls: " << device_array->array.null_count
+              << ", device: " << device_type_to_string(device_array->device_type) << ":"
               << device_array->device_id
-              << ", children=" << schema->n_children << "\n";
-
-    if (device_array->array.n_children != schema->n_children) {
-        throw std::runtime_error("schema and array child counts differ");
-    }
-    if (schema->n_children == 0) {
-        return;
-    }
-    if (schema->children == nullptr || device_array->array.children == nullptr) {
-        throw std::runtime_error("schema or array children pointer is null");
-    }
+              << ", children: " << schema->n_children << "\n";
 
     for (int64_t i = 0; i < schema->n_children; ++i) {
         auto const child_schema = schema->children[i];
-        auto const child_array = device_array->array.children != nullptr ? device_array->array.children[i] : nullptr;
-        std::cout << "  [" << i << "] "
-                  << (child_schema != nullptr && child_schema->name != nullptr ? child_schema->name : "(unnamed)")
-                  << " format="
-                  << (child_schema != nullptr && child_schema->format != nullptr ? child_schema->format : "(null)")
-                  << ", rows=" << (child_array != nullptr ? child_array->length : -1) << "\n";
+        auto const child_array = device_array->array.children[i];
+        auto const child_name =
+            child_schema != nullptr && child_schema->name != nullptr ? child_schema->name : "(unnamed)";
+        auto const child_format =
+            child_schema != nullptr && child_schema->format != nullptr ? child_schema->format : "(null)";
+        auto const child_length = child_array != nullptr ? child_array->length : -1;
+        std::cout << "    [" << std::setw(2) << i << "] " << std::left << std::setw(20)
+                  << child_name << " format=" << std::setw(12) << child_format << std::right
+                  << " rows=" << child_length << "\n";
     }
 }
 
@@ -199,12 +194,21 @@ void validate_device_array(char const *label,
                            validate_array_fn validate_array,
                            int64_t *expected_device_id) {
     check_cuda_device(device_array, expected_device_id);
+
+    if (device_array->array.n_children != schema->n_children) {
+        throw std::runtime_error("schema and array child counts differ");
+    }
+    if (schema->n_children != 0 &&
+        (schema->children == nullptr || device_array->array.children == nullptr)) {
+        throw std::runtime_error("schema or array children pointer is null");
+    }
+
     print_device_array_summary(label, schema, device_array);
 
     auto table = cudf::from_arrow_device(schema, device_array);
-    std::cout << "cuDF import succeeded\n";
+    std::cout << "  cuDF import: ok\n";
     validate_imported_table(*table, schema, validate_array);
-    std::cout << "host Arrow round-trip validated\n";
+    std::cout << "  host Arrow round-trip: ok\n";
 }
 
 void check_stream_result(ArrowDeviceArrayStream *stream, char const *operation, int code) {
@@ -232,7 +236,7 @@ int run_check(const char *library_path) {
         auto export_array = library.symbol<export_array_fn>("export_array");
         auto validate_array = library.symbol<validate_array_fn>("validate_array");
 
-        std::cout << "Calling export_array...\n";
+        std::cout << "Export: ArrowDeviceArray\n";
         auto result = export_array(schema.get(), device_array.get());
         if (result != 0) {
             throw std::runtime_error("export_array returned error code " + std::to_string(result));
@@ -240,7 +244,7 @@ int run_check(const char *library_path) {
 
         int64_t device_id = -1;
         validate_device_array("ArrowDeviceArray", schema.get(), device_array.get(), validate_array, &device_id);
-        std::cout << "\nAll checks passed!\n";
+        std::cout << "Result: ok\n";
         return 0;
     } catch (std::exception const &e) {
         std::cerr << "Error: Failed to validate Arrow device export with cuDF: " << e.what() << "\n";
@@ -257,7 +261,7 @@ int run_check_stream(const char *library_path) {
         auto export_device_stream = library.symbol<export_device_stream_fn>("export_device_stream");
         auto validate_array = library.symbol<validate_array_fn>("validate_array");
 
-        std::cout << "Calling export_device_stream...\n";
+        std::cout << "Export: ArrowDeviceArrayStream\n";
         auto result = export_device_stream(stream.get());
         if (result != 0) {
             throw std::runtime_error("export_device_stream returned error code " + std::to_string(result));
@@ -270,8 +274,9 @@ int run_check_stream(const char *library_path) {
         }
 
         check_stream_result(stream.get(), "get_schema", stream.value.get_schema(stream.get(), schema.get()));
-        std::cout << "Stream schema: format=" << (schema.value.format ? schema.value.format : "(null)")
-                  << ", children=" << schema.value.n_children << "\n";
+        std::cout << "Stream schema\n"
+                  << "  format: " << (schema.value.format ? schema.value.format : "(null)")
+                  << ", children: " << schema.value.n_children << "\n";
 
         int64_t batch_count = 0;
         int64_t device_id = -1;
@@ -279,7 +284,7 @@ int run_check_stream(const char *library_path) {
             OwnedDeviceArray batch;
             check_stream_result(stream.get(), "get_next", stream.value.get_next(stream.get(), batch.get()));
             if (!batch.is_live()) {
-                std::cout << "Reached end of stream after " << batch_count << " batches\n";
+                std::cout << "End of stream: " << batch_count << " batch(es)\n";
                 break;
             }
 
@@ -298,10 +303,7 @@ int run_check_stream(const char *library_path) {
             throw std::runtime_error("get_next after EOS returned a live batch");
         }
 
-        release_device_stream(stream.get());
-        release_device_stream(stream.get());
-
-        std::cout << "\nAll stream checks passed!\n";
+        std::cout << "Result: ok\n";
         return 0;
     } catch (std::exception const &e) {
         std::cerr << "Error: Failed to validate Arrow device stream export with cuDF: " << e.what() << "\n";
