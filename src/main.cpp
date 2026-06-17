@@ -266,7 +266,8 @@ int run_check_stream(const char *library_path) {
         if (result != 0) {
             throw std::runtime_error("export_device_stream returned error code " + std::to_string(result));
         }
-        if (stream.value.get_schema == nullptr || stream.value.get_next == nullptr || stream.value.release == nullptr) {
+        if (stream.value.get_schema == nullptr || stream.value.get_next == nullptr ||
+            stream.value.get_last_error == nullptr || stream.value.release == nullptr) {
             throw std::runtime_error("stream is missing required callbacks");
         }
         if (stream.value.device_type != ARROW_DEVICE_CUDA) {
