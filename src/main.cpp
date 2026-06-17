@@ -1,27 +1,25 @@
-#include <cstdlib>
+#include <cstdint>
+#include <iomanip>
 #include <dlfcn.h>
 #include <iostream>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <cudf/column/column.hpp>
-#include <cudf/column/column_view.hpp>
 #include <cudf/interop.hpp>
-#include <cudf/types.hpp>
 
 #include "arrow_c_device.h"
 
-// Function pointer type for export_array
 using export_array_fn = int (*)(ArrowSchema *, ArrowDeviceArray *);
+using export_device_stream_fn = int (*)(ArrowDeviceArrayStream *);
 using validate_array_fn = int (*)(ArrowSchema *, ArrowArray *);
 
 void print_usage(const char *program_name) {
-    std::cerr << "Usage: " << program_name << " check <library.so>\n";
+    std::cerr << "Usage: " << program_name << " <command> <library.so>\n";
     std::cerr << "\n";
     std::cerr << "Commands:\n";
-    std::cerr << "  check <library.so>  Load the library and test Arrow device data export\n";
+    std::cerr << "  check <library.so>         Test single ArrowDeviceArray export\n";
+    std::cerr << "  check-stream <library.so>  Test ArrowDeviceArrayStream export\n";
 }
 
 const char *device_type_to_string(ArrowDeviceType device_type) {
@@ -36,185 +34,281 @@ const char *device_type_to_string(ArrowDeviceType device_type) {
     }
 }
 
-const char *cudf_type_to_string(cudf::type_id type) {
-    switch (type) {
-        case cudf::type_id::EMPTY: return "EMPTY";
-        case cudf::type_id::INT8: return "INT8";
-        case cudf::type_id::INT16: return "INT16";
-        case cudf::type_id::INT32: return "INT32";
-        case cudf::type_id::INT64: return "INT64";
-        case cudf::type_id::UINT8: return "UINT8";
-        case cudf::type_id::UINT16: return "UINT16";
-        case cudf::type_id::UINT32: return "UINT32";
-        case cudf::type_id::UINT64: return "UINT64";
-        case cudf::type_id::FLOAT32: return "FLOAT32";
-        case cudf::type_id::FLOAT64: return "FLOAT64";
-        case cudf::type_id::BOOL8: return "BOOL8";
-        case cudf::type_id::TIMESTAMP_DAYS: return "TIMESTAMP_DAYS";
-        case cudf::type_id::TIMESTAMP_SECONDS: return "TIMESTAMP_SECONDS";
-        case cudf::type_id::TIMESTAMP_MILLISECONDS: return "TIMESTAMP_MILLISECONDS";
-        case cudf::type_id::TIMESTAMP_MICROSECONDS: return "TIMESTAMP_MICROSECONDS";
-        case cudf::type_id::TIMESTAMP_NANOSECONDS: return "TIMESTAMP_NANOSECONDS";
-        case cudf::type_id::DURATION_DAYS: return "DURATION_DAYS";
-        case cudf::type_id::DURATION_SECONDS: return "DURATION_SECONDS";
-        case cudf::type_id::DURATION_MILLISECONDS: return "DURATION_MILLISECONDS";
-        case cudf::type_id::DURATION_MICROSECONDS: return "DURATION_MICROSECONDS";
-        case cudf::type_id::DURATION_NANOSECONDS: return "DURATION_NANOSECONDS";
-        case cudf::type_id::DICTIONARY32: return "DICTIONARY32";
-        case cudf::type_id::STRING: return "STRING";
-        case cudf::type_id::LIST: return "LIST";
-        case cudf::type_id::DECIMAL32: return "DECIMAL32";
-        case cudf::type_id::DECIMAL64: return "DECIMAL64";
-        case cudf::type_id::DECIMAL128: return "DECIMAL128";
-        case cudf::type_id::STRUCT: return "STRUCT";
-        default: return "UNKNOWN";
+void release_schema(ArrowSchema *schema) {
+    if (schema != nullptr && schema->release != nullptr) {
+        schema->release(schema);
     }
 }
 
-void print_column_stats(const cudf::column_view &col, const char *name) {
-    std::cout << "Column Statistics(" << name << "):\n";
-    std::cout << "  Type: " << cudf_type_to_string(col.type().id()) << "\n";
-    std::cout << "  Size: " << col.size() << " rows\n";
-    std::cout << "  Null count: " << col.null_count() << "\n";
-    std::cout << "  Has nulls: " << (col.has_nulls() ? "yes" : "no") << "\n";
-    std::cout << "  Num children: " << col.num_children() << "\n";
+void release_device_array(ArrowDeviceArray *device_array) {
+    if (device_array != nullptr && device_array->array.release != nullptr) {
+        device_array->array.release(&device_array->array);
+    }
+}
+
+void release_device_stream(ArrowDeviceArrayStream *stream) {
+    if (stream != nullptr && stream->release != nullptr) {
+        stream->release(stream);
+    }
+}
+
+class SharedLibrary {
+public:
+    explicit SharedLibrary(const char *path) {
+        std::cout << "Library: " << path << "\n";
+        handle_ = dlopen(path, RTLD_NOW);
+        if (handle_ == nullptr) {
+            throw std::runtime_error(std::string("failed to load library: ") + dlerror());
+        }
+        dlerror();
+    }
+
+    ~SharedLibrary() {
+        if (handle_ != nullptr) {
+            dlclose(handle_);
+        }
+    }
+
+    SharedLibrary(SharedLibrary const &) = delete;
+    SharedLibrary &operator=(SharedLibrary const &) = delete;
+
+    template <typename T>
+    T symbol(const char *name) const {
+        dlerror();
+        auto symbol = reinterpret_cast<T>(dlsym(handle_, name));
+        const char *error = dlerror();
+        if (error != nullptr) {
+            throw std::runtime_error(std::string("failed to load symbol ") + name + ": " + error);
+        }
+        return symbol;
+    }
+
+private:
+    void *handle_ = nullptr;
+};
+
+struct OwnedSchema {
+    ArrowSchema value{};
+
+    ~OwnedSchema() { release_schema(&value); }
+
+    OwnedSchema() = default;
+    OwnedSchema(OwnedSchema const &) = delete;
+    OwnedSchema &operator=(OwnedSchema const &) = delete;
+
+    ArrowSchema *get() { return &value; }
+};
+
+struct OwnedDeviceArray {
+    ArrowDeviceArray value{};
+
+    ~OwnedDeviceArray() { release_device_array(&value); }
+
+    OwnedDeviceArray() = default;
+    OwnedDeviceArray(OwnedDeviceArray const &) = delete;
+    OwnedDeviceArray &operator=(OwnedDeviceArray const &) = delete;
+
+    ArrowDeviceArray *get() { return &value; }
+    bool is_live() const { return value.array.release != nullptr; }
+};
+
+struct OwnedDeviceArrayStream {
+    ArrowDeviceArrayStream value{};
+
+    ~OwnedDeviceArrayStream() { release_device_stream(&value); }
+
+    OwnedDeviceArrayStream() = default;
+    OwnedDeviceArrayStream(OwnedDeviceArrayStream const &) = delete;
+    OwnedDeviceArrayStream &operator=(OwnedDeviceArrayStream const &) = delete;
+
+    ArrowDeviceArrayStream *get() { return &value; }
+};
+
+std::vector<cudf::column_metadata> metadata_from_schema(ArrowSchema const *schema,
+                                                        cudf::size_type num_columns) {
+    if (schema == nullptr || schema->children == nullptr || schema->n_children != num_columns) {
+        throw std::runtime_error("exported schema does not match imported table");
+    }
+
+    auto metadata = std::vector<cudf::column_metadata>{};
+    metadata.reserve(num_columns);
+    for (auto i = 0; i < num_columns; ++i) {
+        auto const child_schema = schema->children[i];
+        if (child_schema == nullptr || child_schema->name == nullptr) {
+            throw std::runtime_error("exported schema child is missing a name");
+        }
+        metadata.push_back(cudf::column_metadata{child_schema->name});
+    }
+    return metadata;
+}
+
+void validate_imported_table(cudf::table_view const &table,
+                             ArrowSchema const *schema,
+                             validate_array_fn validate_array) {
+    auto host_array = cudf::to_arrow_host(table);
+    auto host_metadata = metadata_from_schema(schema, table.num_columns());
+    auto host_schema = cudf::to_arrow_schema(table, host_metadata);
+    if (validate_array(host_schema.get(), &host_array->array) != 0) {
+        throw std::runtime_error("validation failed");
+    }
+}
+
+void print_device_array_summary(char const *label,
+                                ArrowSchema const *schema,
+                                ArrowDeviceArray const *device_array) {
+    std::cout << label << "\n"
+              << "  rows: " << device_array->array.length
+              << ", nulls: " << device_array->array.null_count
+              << ", device: " << device_type_to_string(device_array->device_type) << ":"
+              << device_array->device_id
+              << ", children: " << schema->n_children << "\n";
+
+    for (int64_t i = 0; i < schema->n_children; ++i) {
+        auto const child_schema = schema->children[i];
+        auto const child_array = device_array->array.children[i];
+        auto const child_name =
+            child_schema != nullptr && child_schema->name != nullptr ? child_schema->name : "(unnamed)";
+        auto const child_format =
+            child_schema != nullptr && child_schema->format != nullptr ? child_schema->format : "(null)";
+        auto const child_length = child_array != nullptr ? child_array->length : -1;
+        std::cout << "    [" << std::setw(2) << i << "] " << std::left << std::setw(20)
+                  << child_name << " format=" << std::setw(12) << child_format << std::right
+                  << " rows=" << child_length << "\n";
+    }
+}
+
+void check_cuda_device(ArrowDeviceArray const *device_array, int64_t *expected_device_id) {
+    if (device_array->device_type != ARROW_DEVICE_CUDA) {
+        throw std::runtime_error("ArrowDeviceArray device_type is not CUDA");
+    }
+    if (*expected_device_id == -1) {
+        *expected_device_id = device_array->device_id;
+    } else if (device_array->device_id != *expected_device_id) {
+        throw std::runtime_error("stream batch CUDA device changed");
+    }
+}
+
+void validate_device_array(char const *label,
+                           ArrowSchema const *schema,
+                           ArrowDeviceArray *device_array,
+                           validate_array_fn validate_array,
+                           int64_t *expected_device_id) {
+    check_cuda_device(device_array, expected_device_id);
+
+    if (device_array->array.n_children != schema->n_children) {
+        throw std::runtime_error("schema and array child counts differ");
+    }
+    if (schema->n_children != 0 &&
+        (schema->children == nullptr || device_array->array.children == nullptr)) {
+        throw std::runtime_error("schema or array children pointer is null");
+    }
+
+    print_device_array_summary(label, schema, device_array);
+
+    auto table = cudf::from_arrow_device(schema, device_array);
+    std::cout << "  cuDF import: ok\n";
+    validate_imported_table(*table, schema, validate_array);
+    std::cout << "  host Arrow round-trip: ok\n";
+}
+
+void check_stream_result(ArrowDeviceArrayStream *stream, char const *operation, int code) {
+    if (code == 0) {
+        return;
+    }
+
+    auto message = std::string("ArrowDeviceArrayStream::") + operation + " returned " + std::to_string(code);
+    if (stream != nullptr && stream->get_last_error != nullptr) {
+        auto const *last_error = stream->get_last_error(stream);
+        if (last_error != nullptr) {
+            message += ": ";
+            message += last_error;
+        }
+    }
+    throw std::runtime_error(message);
 }
 
 int run_check(const char *library_path) {
-    std::cout << "Loading library: " << library_path << "\n";
-
-    // Open the shared library
-    void *handle = dlopen(library_path, RTLD_NOW);
-    if (!handle) {
-        std::cerr << "Error: Failed to load library: " << dlerror() << "\n";
-        return 1;
-    }
-
-    // Clear any existing error
-    dlerror();
-
-    // Load the export_array symbol
-    auto export_array = reinterpret_cast<export_array_fn>(dlsym(handle, "export_array"));
-    const char *dlsym_error = dlerror();
-    if (dlsym_error) {
-        std::cerr << "Error: Failed to load symbol 'export_array': " << dlsym_error << "\n";
-        dlclose(handle);
-        return 1;
-    }
-
-    std::cout << "Found export_array symbol\n";
-
-    auto validate_array = reinterpret_cast<validate_array_fn>(dlsym(handle, "validate_array"));
-
-    // Initialize the Arrow structures
-    ArrowSchema schema{};
-    ArrowDeviceArray device_array{};
-
-    // Call export_array
-    std::cout << "Calling export_array...\n";
-    int result = export_array(&schema, &device_array);
-    if (result != 0) {
-        std::cerr << "Error: export_array returned error code " << result << "\n";
-        dlclose(handle);
-        return 1;
-    }
-
-    std::cout << "export_array succeeded\n";
-
-    // Print Arrow array info
-    std::cout << "\nArrow Array Info:\n";
-    std::cout << "  Schema format: " << (schema.format ? schema.format : "(null)") << "\n";
-    std::cout << "  Schema name: " << (schema.name ? schema.name : "(null)") << "\n";
-    std::cout << "  Array length: " << device_array.array.length << "\n";
-    std::cout << "  Array null_count: " << device_array.array.null_count << "\n";
-    std::cout << "  Device type: " << device_type_to_string(device_array.device_type) << "\n";
-    std::cout << "  Device ID: " << device_array.device_id << "\n";
-
-    std::cout << "\nStruct children debug:\n";
-    std::cout << "  Schema n_children: " << schema.n_children << "\n";
-    std::cout << "  Schema children ptr: " << (void *) schema.children << "\n";
-    std::cout << "  Array n_children: " << device_array.array.n_children << "\n";
-    std::cout << "  Array children ptr: " << (void *) device_array.array.children << "\n";
-
-    if (schema.children) {
-        for (int64_t i = 0; i < schema.n_children; i++) {
-            std::cout << "  Child " << i << ":\n";
-            std::cout << "    schema ptr: " << (void *) schema.children[i] << "\n";
-            if (schema.children[i]) {
-                std::cout << "    format: " << (schema.children[i]->format ? schema.children[i]->format : "(null)") <<
-                        "\n";
-                std::cout << "    name: " << (schema.children[i]->name ? schema.children[i]->name : "(null)") << "\n";
-            }
-            if (device_array.array.children) {
-                std::cout << "    array ptr: " << (void *) device_array.array.children[i] << "\n";
-                if (device_array.array.children[i]) {
-                    std::cout << "    array length: " << device_array.array.children[i]->length << "\n";
-                }
-            }
-        }
-    }
-
-    std::cout << "\nConverting to cuDF table view...\n";
     try {
-        auto table = cudf::from_arrow_device(&schema, &device_array);
+        SharedLibrary library(library_path);
+        OwnedSchema schema;
+        OwnedDeviceArray device_array;
 
-        std::cout << "Conversion successful!\n\n";
+        auto export_array = library.symbol<export_array_fn>("export_array");
+        auto validate_array = library.symbol<validate_array_fn>("validate_array");
 
-        // Round-trip to host Arrow and validate in the producer library.
-        auto host_array = cudf::to_arrow_host(*table);
-        auto host_metadata = std::vector<cudf::column_metadata>{};
-        auto const num_columns = table->num_columns();
-        if (schema.n_children != num_columns || schema.children == nullptr) {
-            throw std::runtime_error("exported schema does not match imported table");
+        std::cout << "Export: ArrowDeviceArray\n";
+        auto result = export_array(schema.get(), device_array.get());
+        if (result != 0) {
+            throw std::runtime_error("export_array returned error code " + std::to_string(result));
         }
-        host_metadata.reserve(num_columns);
-        for (auto i = 0; i < num_columns; ++i) {
-            auto const child_schema = schema.children[i];
-            if (child_schema == nullptr || child_schema->name == nullptr) {
-                throw std::runtime_error("exported schema child is missing a name");
-            }
-            host_metadata.push_back(cudf::column_metadata{child_schema->name});
-        }
-        auto host_schema = cudf::to_arrow_schema(*table, host_metadata);
-        if (validate_array(host_schema.get(), &host_array->array) != 0) {
-            throw std::runtime_error("validation failed");
-        }
-    } catch (const std::exception &e) {
+
+        int64_t device_id = -1;
+        validate_device_array("ArrowDeviceArray", schema.get(), device_array.get(), validate_array, &device_id);
+        std::cout << "Result: ok\n";
+        return 0;
+    } catch (std::exception const &e) {
         std::cerr << "Error: Failed to validate Arrow device export with cuDF: " << e.what() << "\n";
-
-        // Release the Arrow array
-        if (device_array.array.release) {
-            device_array.array.release(&device_array.array);
-        }
-        if (schema.release) {
-            schema.release(&schema);
-        }
-        dlclose(handle);
         return 1;
     }
+}
 
-    // Release the Arrow array
-    std::cout << "\nReleasing Arrow array...\n";
-    if (device_array.array.release) {
-        device_array.array.release(&device_array.array);
-        std::cout << "  Released ArrowDeviceArray\n";
-    } else {
-        std::cout << "  Warning: ArrowDeviceArray has no release callback\n";
+int run_check_stream(const char *library_path) {
+    try {
+        SharedLibrary library(library_path);
+        OwnedDeviceArrayStream stream;
+        OwnedSchema schema;
+
+        auto export_device_stream = library.symbol<export_device_stream_fn>("export_device_stream");
+        auto validate_array = library.symbol<validate_array_fn>("validate_array");
+
+        std::cout << "Export: ArrowDeviceArrayStream\n";
+        auto result = export_device_stream(stream.get());
+        if (result != 0) {
+            throw std::runtime_error("export_device_stream returned error code " + std::to_string(result));
+        }
+        if (stream.value.get_schema == nullptr || stream.value.get_next == nullptr || stream.value.release == nullptr) {
+            throw std::runtime_error("stream is missing required callbacks");
+        }
+        if (stream.value.device_type != ARROW_DEVICE_CUDA) {
+            throw std::runtime_error("stream device_type is not CUDA");
+        }
+
+        check_stream_result(stream.get(), "get_schema", stream.value.get_schema(stream.get(), schema.get()));
+        std::cout << "Stream schema\n"
+                  << "  format: " << (schema.value.format ? schema.value.format : "(null)")
+                  << ", children: " << schema.value.n_children << "\n";
+
+        int64_t batch_count = 0;
+        int64_t device_id = -1;
+        while (true) {
+            OwnedDeviceArray batch;
+            check_stream_result(stream.get(), "get_next", stream.value.get_next(stream.get(), batch.get()));
+            if (!batch.is_live()) {
+                std::cout << "End of stream: " << batch_count << " batch(es)\n";
+                break;
+            }
+
+            auto label = std::string("Stream batch ") + std::to_string(batch_count);
+            validate_device_array(label.c_str(), schema.get(), batch.get(), validate_array, &device_id);
+            ++batch_count;
+        }
+
+        if (batch_count == 0) {
+            throw std::runtime_error("stream produced no batches");
+        }
+
+        OwnedDeviceArray second_eos;
+        check_stream_result(stream.get(), "get_next after EOS", stream.value.get_next(stream.get(), second_eos.get()));
+        if (second_eos.is_live()) {
+            throw std::runtime_error("get_next after EOS returned a live batch");
+        }
+
+        std::cout << "Result: ok\n";
+        return 0;
+    } catch (std::exception const &e) {
+        std::cerr << "Error: Failed to validate Arrow device stream export with cuDF: " << e.what() << "\n";
+        return 1;
     }
-
-    // Release the schema
-    if (schema.release) {
-        schema.release(&schema);
-        std::cout << "  Released ArrowSchema\n";
-    } else {
-        std::cout << "  Warning: ArrowSchema has no release callback\n";
-    }
-
-    // Close the library
-    dlclose(handle);
-    std::cout << "\nAll checks passed!\n";
-
-    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -223,21 +317,24 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    std::string command = argv[1];
-
-    if (command == "check") {
-        if (argc < 3) {
-            std::cerr << "Error: 'check' command requires a library path\n";
-            print_usage(argv[0]);
-            return 1;
-        }
-        return run_check(argv[2]);
-    } else if (command == "--help" || command == "-h") {
+    auto command = std::string{argv[1]};
+    if (command == "--help" || command == "-h") {
         print_usage(argv[0]);
         return 0;
-    } else {
-        std::cerr << "Error: Unknown command '" << command << "'\n";
+    }
+    if (argc < 3) {
+        std::cerr << "Error: " << command << " command requires a library path\n";
         print_usage(argv[0]);
         return 1;
     }
+    if (command == "check") {
+        return run_check(argv[2]);
+    }
+    if (command == "check-stream") {
+        return run_check_stream(argv[2]);
+    }
+
+    std::cerr << "Error: Unknown command " << command << "\n";
+    print_usage(argv[0]);
+    return 1;
 }

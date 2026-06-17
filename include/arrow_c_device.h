@@ -81,6 +81,15 @@ struct ArrowDeviceArray {
   int64_t _reserved[3];
 };
 
+struct ArrowDeviceArrayStream {
+  ArrowDeviceType device_type;
+  int (*get_schema)(struct ArrowDeviceArrayStream*, struct ArrowSchema* out);
+  int (*get_next)(struct ArrowDeviceArrayStream*, struct ArrowDeviceArray* out);
+  const char* (*get_last_error)(struct ArrowDeviceArrayStream*);
+  void (*release)(struct ArrowDeviceArrayStream*);
+  void* private_data;
+};
+
 #ifdef __cplusplus
 }
 #endif
