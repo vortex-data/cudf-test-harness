@@ -161,8 +161,14 @@ void print_device_array_summary(char const *label,
               << device_array->device_id
               << ", children=" << schema->n_children << "\n";
 
-    if (schema->children == nullptr) {
+    if (device_array->array.n_children != schema->n_children) {
+        throw std::runtime_error("schema and array child counts differ");
+    }
+    if (schema->n_children == 0) {
         return;
+    }
+    if (schema->children == nullptr || device_array->array.children == nullptr) {
+        throw std::runtime_error("schema or array children pointer is null");
     }
 
     for (int64_t i = 0; i < schema->n_children; ++i) {
